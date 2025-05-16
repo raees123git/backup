@@ -1,0 +1,55 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+# Virtual environments
+env/
+venv/
+
+.venv/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Jupyter Notebook checkpoints (if used)
+.ipynb_checkpoints/
+
+# Pytest cache
+.pytest_cache/
+
+# mypy
+.mypy_cache/
+
+# PyCharm or VS Code IDE files
+.idea/
+.vscode/
+
+# Environment variables
+.env
+
+# Logs
+*.log
+
+# Hugging Face model caches
+*.bin
+*.h5
+
+*.ckpt
+*.pkl
+*.joblib
+
+# Transformers cache
+~/.cache/huggingface/
+~/.huggingface/
+
+# FastAPI generated OpenAPI docs (optional)
+openapi.json
+
+# System files
+.DS_Store
+Thumbs.db
