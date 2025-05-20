@@ -1,22 +1,24 @@
-// app/components/InterviewSimulatorWithVoice.jsx
 "use client";
 
 import { useEffect, useState, useRef } from "react";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import { XCircle } from "lucide-react";
 
 export default function InterviewSimulatorWithVoice() {
   const [started, setStarted] = useState(false);
-  const [question, setQuestion] = useState("");
+  const [questions, setQuestions] = useState([]);
+  const [currentIndex, setCurrentIndex] = useState(0);
   const [answer, setAnswer] = useState("");
+  const [answers, setAnswers] = useState([]);            // ← new: store all answers
   const [countdown, setCountdown] = useState(null);
   const [transcribing, setTranscribing] = useState(false);
   const [spoken, setSpoken] = useState(false);
+  const [loadingQuestions, setLoadingQuestions] = useState(false);
   const [hoveredButton, setHoveredButton] = useState(null);
   const recognitionRef = useRef(null);
   const videoRef = useRef(null);
-
+  const router = useRouter();
   const searchParams = useSearchParams();
   const type = searchParams.get("type") || "technical";
   const role =
@@ -29,7 +31,7 @@ export default function InterviewSimulatorWithVoice() {
   useEffect(() => {
     if (started) {
       enableWebcam();
-      fetchNextQuestion();
+      fetchAllQuestions();
     }
   }, [started]);
 
@@ -42,20 +44,9 @@ export default function InterviewSimulatorWithVoice() {
     }
   };
 
-  const fetchNextQuestion = async () => {
+  const fetchAllQuestions = async () => {
+    setLoadingQuestions(true);
     try {
-      setSpoken(false);
-      setAnswer("");
-      setCountdown(3);
-
-      // 3‑second countdown
-      for (let i = 3; i > 0; i--) {
-        setCountdown(i);
-        await new Promise((res) => setTimeout(res, 1000));
-      }
-      setCountdown(null);
-
-      // Call your local FastAPI
       const res = await fetch(
         `http://localhost:8000/api/interview/generate-question`,
         {
@@ -64,27 +55,35 @@ export default function InterviewSimulatorWithVoice() {
           body: JSON.stringify({ type, role }),
         }
       );
-      console.log(res)
       if (!res.ok) {
         const err = await res.json();
         throw new Error(err.detail || `API error ${res.status}`);
       }
-
-      const { question: generatedQuestion } = await res.json();
-      setQuestion(generatedQuestion);
-      speakText(generatedQuestion);
+      const { question: fetched } = await res.json();
+      const firstSeven = Array.isArray(fetched) ? fetched.slice(0, 7) : [];
+      setQuestions(firstSeven);
+      playQuestion(0, firstSeven);
     } catch (err) {
-      console.error("Error fetching question:", err);
-      // fallback question
-      const fallback =
-        type === "technical"
-          ? `Describe a challenge you faced as a ${role}.`
-          : type === "behavioral"
-          ? "Tell me about a time you worked in a team."
-          : "Describe a project mentioned in your resume.";
-      setQuestion(fallback);
-      speakText(fallback);
+      console.error("Error fetching questions:", err);
+    } finally {
+      setLoadingQuestions(false);
     }
+  };
+
+  const playQuestion = async (index, qs) => {
+    setCurrentIndex(index);
+    const text = qs[index];
+    setSpoken(false);
+    setAnswer("");
+    setCountdown(3);
+    for (let i = 3; i > 0; i--) {
+      setCountdown(i);
+      // pause 1s
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((res) => setTimeout(res, 1000));
+    }
+    setCountdown(null);
+    speakText(text);
   };
 
   const speakText = (text) => {
@@ -101,7 +100,7 @@ export default function InterviewSimulatorWithVoice() {
 
     const recognition = new webkitSpeechRecognition();
     recognitionRef.current = recognition;
-    recognition.continuous = false;
+    recognition.continuous = true;
     recognition.interimResults = false;
     recognition.lang = "en-US";
 
@@ -110,8 +109,11 @@ export default function InterviewSimulatorWithVoice() {
     recognition.onerror = (e) => console.error("Speech error:", e);
 
     recognition.onresult = (e) => {
-      const transcript = e.results[0][0].transcript;
-      setAnswer(transcript);
+      let transcript = "";
+      for (let i = e.resultIndex; i < e.results.length; ++i) {
+        transcript += e.results[i][0].transcript;
+      }
+      setAnswer((prev) => prev + " " + transcript);
       setSpoken(true);
     };
 
@@ -125,27 +127,47 @@ export default function InterviewSimulatorWithVoice() {
   };
 
   const handleSubmit = async () => {
+    // (optional) send to evaluation API
     try {
       const evalRes = await fetch(
         `${process.env.NEXT_PUBLIC_API_URL}/api/interview/evaluate-answer`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ question, answer, role }),
+          body: JSON.stringify({
+            question: questions[currentIndex],
+            answer,
+            role,
+          }),
         }
       );
-
-      if (!evalRes.ok) {
-        const err = await evalRes.json();
-        throw new Error(err.detail || `Evaluation failed: ${evalRes.status}`);
-      }
-
-      const evaluationData = await evalRes.json();
-      console.log("Evaluation result:", evaluationData);
+      if (!evalRes.ok) throw new Error(`Eval error ${evalRes.status}`);
+      console.log("Evaluation result:", await evalRes.json());
     } catch (err) {
-      console.error("Error submitting answer:", err);
-    } finally {
-      fetchNextQuestion();
+      console.error(err);
+    }
+
+    // 1) store the current answer
+    setAnswers((prev) => [...prev, answer]);
+
+    // 2) either advance or finish
+    if (currentIndex < questions.length - 1) {
+      playQuestion(currentIndex + 1, questions);
+    } else {
+      // last question → persist and redirect
+      const payload = { questions, answers: [...answers, answer] };
+      localStorage.setItem("interviewResults", JSON.stringify(payload));
+      router.push("/interview/complete");
+    }
+  };
+
+  const handleTerminate = () => {
+    if (
+      window.confirm(
+        "Terminating now will lose all progress. Are you sure you want to terminate the interview?"
+      )
+    ) {
+      router.push("/");
     }
   };
 
@@ -166,13 +188,37 @@ export default function InterviewSimulatorWithVoice() {
   const canStart = !transcribing;
   const canStop = transcribing;
   const canSubmit = !transcribing && spoken;
-  const startLabel = transcribing ? "Speaking..." : spoken ? "Speak Again" : "Start Speaking";
+  const startLabel = transcribing
+    ? "Speaking..."
+    : spoken
+    ? "Speak Again"
+    : "Start Speaking";
   const btnClass = (enabled) =>
     `${enabled ? "bg-blue-600 hover:bg-blue-700" : "bg-gray-700 cursor-not-allowed"} px-6 py-2 rounded-lg text-white flex items-center`;
+  const isLast = currentIndex === questions.length - 1;
+  const submitLabel = isLast ? "Finish Interview" : "Submit & Next";
 
   return (
-    <div className="min-h-screen bg-gray-950 text-white p-8 flex items-center justify-center">
-      <div className="flex w-full max-w-7xl gap-10">
+    <div className="relative min-h-screen bg-gray-950 text-white p-8">
+      {loadingQuestions && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-800 bg-opacity-75 z-10">
+          <div className="w-16 h-16 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
+          <p className="mt-4 text-white text-lg">Generating Questions...</p>
+        </div>
+      )}
+
+      <button
+        onClick={handleTerminate}
+        className="absolute bottom-4 right-4 bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg shadow-lg"
+      >
+        Terminate Interview
+      </button>
+
+      <h1 className="absolute top-24 left-1/2 transform -translate-x-1/2 text-3xl font-bold text-white">
+        {`Interview of ${role}`}
+      </h1>
+
+      <div className="mt-32 flex items-center justify-center w-full max-w-7xl mx-auto gap-10 opacity-90">
         <motion.div
           className="w-1/3 flex flex-col items-center gap-6"
           initial={{ opacity: 0, x: -50 }}
@@ -200,11 +246,10 @@ export default function InterviewSimulatorWithVoice() {
           )}
 
           <div className="bg-gray-800 p-6 rounded-xl border border-gray-700">
-            <h2 className="text-xl font-bold mb-2">
-              {type === "technical" ? "Question for" : "Question Type:"}{" "}
-              <span className="text-blue-400">{role}</span>
-            </h2>
-            <p className="text-lg text-blue-300 min-h-[48px]">{question}</p>
+            <h2 className="text-xl font-bold mb-2">{`Question ${currentIndex + 1}`}</h2>
+            <p className="text-lg text-blue-300 min-h-[48px]">
+              {questions[currentIndex]}
+            </p>
           </div>
 
           <div className="bg-gray-800 p-6 rounded-xl border border-gray-700 space-y-4">
@@ -229,9 +274,10 @@ export default function InterviewSimulatorWithVoice() {
                 className={btnClass(canStart)}
               >
                 {startLabel}
-                {!canStart && hoveredButton === "start" && <XCircle className="ml-2 text-red-500" />}
+                {!canStart && hoveredButton === "start" && (
+                  <XCircle className="ml-2 text-red-500" />
+                )}
               </button>
-
               <button
                 onMouseEnter={() => setHoveredButton("stop")}
                 onMouseLeave={() => setHoveredButton(null)}
@@ -240,9 +286,10 @@ export default function InterviewSimulatorWithVoice() {
                 className={btnClass(canStop)}
               >
                 Stop Speaking
-                {!canStop && hoveredButton === "stop" && <XCircle className="ml-2 text-red-500" />}
+                {!canStop && hoveredButton === "stop" && (
+                  <XCircle className="ml-2 text-red-500" />
+                )}
               </button>
-
               <button
                 onMouseEnter={() => setHoveredButton("submit")}
                 onMouseLeave={() => setHoveredButton(null)}
@@ -250,15 +297,11 @@ export default function InterviewSimulatorWithVoice() {
                 disabled={!canSubmit}
                 className={btnClass(canSubmit)}
               >
-                Submit & Next
+                {submitLabel}
                 {!canSubmit && hoveredButton === "submit" && (
                   <XCircle className="ml-2 text-red-500" />
                 )}
               </button>
-
-              {transcribing && (
-                <span className="text-sm text-purple-400 animate-pulse">🎤 Listening...</span>
-              )}
             </div>
           </div>
         </div>
